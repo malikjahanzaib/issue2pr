@@ -1,4 +1,4 @@
-from github import Github
+from github import Github, InputGitTreeElement
 from github.GithubException import GithubException
 import logging
 from config import GITHUB_TOKEN, REPOSITORY, BRANCH_PREFIX
@@ -67,20 +67,30 @@ class GitHubHandler:
     def create_commit(self, branch_name, file_path, content, message):
         """Create a commit with the given content."""
         try:
+            logger.info(f"Creating commit for file {file_path} on branch {branch_name}")
+            logger.info(f"Content type: {type(content)}")
+            logger.info(f"Content preview: {str(content)[:100]}...")
+            
             # Get the current branch reference
             ref = self.repo.get_git_ref(f"heads/{branch_name}")
             
             # Get the current tree
             base_tree = self.repo.get_git_tree(sha=ref.object.sha)
             
+            # Create a blob
+            blob = self.repo.create_git_blob(content=content, encoding="utf-8")
+            
+            # Create a new tree with the updated file
+            element = InputGitTreeElement(
+                path=file_path,
+                mode='100644',
+                type='blob',
+                sha=blob.sha
+            )
+            
             # Create a new tree with the updated file
             new_tree = self.repo.create_git_tree(
-                [{
-                    'path': file_path,
-                    'mode': '100644',
-                    'type': 'blob',
-                    'content': content
-                }],
+                [element],
                 base_tree=base_tree
             )
             

@@ -8,12 +8,14 @@ logger = logging.getLogger(__name__)
 
 class AIEngine:
     def __init__(self):
-        openai.api_key = OPENAI_API_KEY
+        self.client = openai.OpenAI(api_key=OPENAI_API_KEY)
         self.engine = AI_ENGINE
+        logger.info(f"Initialized AI Engine with {self.engine}")
 
     def generate_code(self, issue_title, issue_body, repo_context=None):
         """Generate code changes based on the issue description."""
         try:
+            logger.info(f"Generating code for issue: {issue_title}")
             if self.engine == "gpt4":
                 return self._generate_with_gpt4(issue_title, issue_body, repo_context)
             elif self.engine == "sweep":
@@ -29,28 +31,93 @@ class AIEngine:
         try:
             # Prepare the prompt
             prompt = f"""
+            You are an expert Python developer. Your task is to help resolve a GitHub issue by generating the necessary code changes.
+
             Issue Title: {issue_title}
             Issue Description: {issue_body}
             
             {f"Repository Context: {repo_context}" if repo_context else ""}
             
-            Please provide the code changes needed to resolve this issue.
-            Format your response as a list of file changes, where each change includes:
-            1. The file path
-            2. The complete new content of the file
-            3. A brief explanation of the changes
+            Please provide the code changes needed to resolve this issue. For each file that needs to be created or modified:
+            1. Specify the file path
+            2. Provide the complete new content of the file
+            3. Include a brief explanation of the changes
             
-            Example format:
+            Format your response exactly like this example:
             ```python
-            # file: path/to/file.py
-            # explanation: Added new function to handle X
-            def new_function():
-                # implementation
+            # file: README.md
+            # explanation: Added comprehensive project documentation
+            # Issue2PR Bot
+            # A GitHub bot that automatically converts issues into Pull Requests using AI-powered code generation.
+
+            ## Overview
+            Issue2PR Bot is an automated solution that transforms GitHub issues into Pull Requests using AI. It monitors repositories for new issues, generates appropriate code changes using GPT-4, and creates PRs automatically.
+
+            ## Features
+            - 🚀 **Automatic PR Generation**: Converts issues to PRs with AI-generated code
+            - 🤖 **AI-Powered**: Uses GPT-4 for intelligent code generation
+            - 🔄 **Real-time Monitoring**: Watches for new issues and labels
+            - 📊 **Status Updates**: Updates issue status with PR progress
+            - 🔒 **Secure**: Verifies webhook signatures and handles errors gracefully
+
+            ## Setup
+            1. **Clone the Repository**
+               ```bash
+               git clone https://github.com/yourusername/issue2pr.git
+               cd issue2pr
+               ```
+
+            2. **Install Dependencies**
+               ```bash
+               pip install -r requirements.txt
+               ```
+
+            3. **Configure Environment Variables**
+               Create a `.env` file with:
+               ```
+               GITHUB_TOKEN=your_github_token
+               OPENAI_API_KEY=your_openai_key
+               WEBHOOK_SECRET=your_webhook_secret
+               ```
+
+            4. **Run the Bot**
+               ```bash
+               python main.py
+               ```
+
+            ## Configuration
+            - `GITHUB_TOKEN`: Your GitHub personal access token
+            - `OPENAI_API_KEY`: Your OpenAI API key
+            - `WEBHOOK_SECRET`: Secret for webhook verification
+            - `REPOSITORY`: Target repository (format: owner/repo)
+            - `BRANCH_PREFIX`: Prefix for created branches
+            - `AI_ENGINE`: AI engine to use (gpt4 or sweep)
+
+            ## Usage
+            1. Create an issue in your repository
+            2. The bot will automatically:
+               - Generate appropriate code changes
+               - Create a new branch
+               - Create a PR with the changes
+               - Update the issue status
+
+            ## Contributing
+            Contributions are welcome! Please feel free to submit a Pull Request.
+
+            ## License
+            This project is licensed under the MIT License - see the LICENSE file for details.
             ```
+
+            Important:
+            - For README files, use proper Markdown formatting
+            - For Python files, include all necessary imports and code
+            - Make sure the content is complete and properly formatted
+            - Include all necessary sections and information
             """
 
-            # Call GPT-4
-            response = openai.ChatCompletion.create(
+            logger.info("Sending request to GPT-4")
+            # Call GPT-4 using the new API format
+            response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
                     {"role": "system", "content": "You are a helpful AI assistant that generates code to resolve GitHub issues."},
@@ -60,7 +127,14 @@ class AIEngine:
                 max_tokens=2000
             )
 
-            return response.choices[0].message.content
+            content = response.choices[0].message.content
+            logger.info(f"Received response from GPT-4: {content[:200]}...")  # Log first 200 chars
+            
+            if not content.strip():
+                logger.error("Empty response received from GPT-4")
+                raise ValueError("Empty response from GPT-4")
+                
+            return content
         except Exception as e:
             logger.error(f"Error with GPT-4 generation: {str(e)}")
             raise
@@ -72,32 +146,57 @@ class AIEngine:
 
     def parse_code_changes(self, ai_response):
         """Parse the AI response into structured code changes."""
+        logger.info("Parsing code changes from AI response")
         changes = []
         current_file = None
         current_content = []
         current_explanation = None
+        in_code_block = False
+        skip_next_line = False
 
         for line in ai_response.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+
             if line.startswith('# file:'):
-                if current_file:
-                    changes.append({
-                        'file': current_file,
-                        'content': '\n'.join(current_content),
-                        'explanation': current_explanation
-                    })
-                current_file = line.split(': ')[1].strip()
+                if current_file and current_content:
+                    content = '\n'.join(current_content).strip()
+                    if content:
+                        changes.append({
+                            'file': current_file,
+                            'content': content,
+                            'explanation': current_explanation or 'No explanation provided'
+                        })
+                current_file = line.split(':', 1)[1].strip()
                 current_content = []
                 current_explanation = None
+                in_code_block = False
             elif line.startswith('# explanation:'):
-                current_explanation = line.split(': ')[1].strip()
-            elif line and not line.startswith('#'):
+                current_explanation = line.split(':', 1)[1].strip()
+            elif line.startswith('```'):
+                if not in_code_block:
+                    skip_next_line = True  # Skip language identifier line
+                in_code_block = not in_code_block
+            elif not skip_next_line and (in_code_block or not line.startswith('#')):
                 current_content.append(line)
+            else:
+                skip_next_line = False
 
-        if current_file:
-            changes.append({
-                'file': current_file,
-                'content': '\n'.join(current_content),
-                'explanation': current_explanation
-            })
+        # Don't forget the last file
+        if current_file and current_content:
+            content = '\n'.join(current_content).strip()
+            if content:
+                changes.append({
+                    'file': current_file,
+                    'content': content,
+                    'explanation': current_explanation or 'No explanation provided'
+                })
+
+        logger.info(f"Parsed {len(changes)} code changes")
+        for change in changes:
+            logger.info(f"File: {change['file']}")
+            logger.info(f"Content preview: {change['content'][:100]}...")
+            logger.info(f"Explanation: {change['explanation']}")
 
         return changes 
