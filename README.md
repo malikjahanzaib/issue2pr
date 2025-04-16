@@ -1,60 +1,23 @@
-# Issue2PR Bot
-
-A GitHub bot that automatically converts issues into Pull Requests using AI-powered code generation.
-
-## Features
-
-- Monitors GitHub repositories for new or labeled issues
-- Uses GPT-4 or Sweep.dev to generate code changes
-- Creates Pull Requests automatically
-- Optional Slack/Discord integration for notifications
-- Configurable AI engine selection
-
-## Setup
-
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/issue2pr.git
-cd issue2pr
-```
-
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-3. Create a `.env` file with your credentials:
-```env
-GITHUB_TOKEN=your_github_token
-OPENAI_API_KEY=your_openai_api_key
-SLACK_BOT_TOKEN=your_slack_bot_token  # Optional
-DISCORD_BOT_TOKEN=your_discord_bot_token  # Optional
-```
-
-4. Set up GitHub webhook:
-   - Go to your repository settings
-   - Add a webhook with the following settings:
-     - Payload URL: `https://your-domain.com/webhook`
-     - Content type: `application/json`
-     - Events: Select "Issues" and "Issue comments"
-
-5. Run the bot:
-```bash
-python main.py
-```
-
-## Configuration
-
-The bot can be configured through environment variables:
-
-- `AI_ENGINE`: Choose between "gpt4" or "sweep" (default: "gpt4")
-- `REPOSITORY`: Target GitHub repository (format: owner/repo)
-- `BRANCH_PREFIX`: Prefix for generated branches (default: "issue2pr-")
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-MIT License 
+This is a brief description of what this project is about and what it does.
+This project is a (short description of the project). It was created to (the purpose of the project). The main features of this project include (list of main features).
+Here are the steps to set up this project:
+1. Clone this repository to your local machine. You can do this by running `git clone (URL of the repository)` in your command line.
+2. Navigate to the project directory by running `cd (name of directory)`.
+3. Install the necessary dependencies by running `pip install -r requirements.txt`.
+To configure the project, follow these steps:
+1. (Step 1)
+2. (Step 2)
+3. (Step 3)
+Here is an example of how to use this project:
+import (module name)
+# Initialize the class
+class_instance = (class name)()
+# Call the necessary methods
+class_instance.method()
+For more usage examples, please refer to the (documentation/wiki/additional resources).
+We welcome contributions from the community. To contribute, please follow these steps:
+1. Fork the repository.
+2. Create a new branch.
+3. Make your changes.
+4. Submit a pull request.
+This project is licensed under the (name of license). For more information, see the `LICENSE` file in this repository.
