@@ -1,145 +1,240 @@
 import openai
 import logging
 from config import OPENAI_API_KEY, AI_ENGINE
+from issue_parser import IssueParser
+from typing import Dict, List
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class AIEngine:
-    def __init__(self):
+    def __init__(self, github_token: str):
         self.client = openai.OpenAI(api_key=OPENAI_API_KEY)
         self.engine = AI_ENGINE
+        self.issue_parser = IssueParser(github_token)
         logger.info(f"Initialized AI Engine with {self.engine}")
 
-    def generate_code(self, issue_title, issue_body, repo_context=None):
-        """Generate code changes based on the issue description."""
+    def generate_code(self, repo_name: str, issue_number: int) -> Dict:
+        """Generate code changes based on the issue and its context."""
         try:
-            logger.info(f"Generating code for issue: {issue_title}")
+            logger.info(f"Generating code for issue #{issue_number} in {repo_name}")
+            
+            # Parse the issue and gather context
+            issue_data = self.issue_parser.parse_issue(repo_name, issue_number)
+            
             if self.engine == "gpt4":
-                return self._generate_with_gpt4(issue_title, issue_body, repo_context)
+                return self._generate_with_gpt4(issue_data)
             elif self.engine == "sweep":
-                return self._generate_with_sweep(issue_title, issue_body, repo_context)
+                return self._generate_with_sweep(issue_data)
             else:
                 raise ValueError(f"Unsupported AI engine: {self.engine}")
+
         except Exception as e:
             logger.error(f"Error generating code: {str(e)}")
             raise
 
-    def _generate_with_gpt4(self, issue_title, issue_body, repo_context):
-        """Generate code using GPT-4."""
+    def _generate_with_gpt4(self, issue_data: Dict) -> Dict:
+        """Generate code using GPT-4 with enhanced context."""
         try:
-            # Prepare the prompt
-            prompt = f"""
-            You are an expert Python developer. Your task is to help resolve a GitHub issue by generating the necessary code changes.
-
-            Issue Title: {issue_title}
-            Issue Description: {issue_body}
+            # Prepare the prompt with enhanced context
+            prompt = self._prepare_gpt4_prompt(issue_data)
+            logger.info(f"Prepared prompt: {prompt[:500]}...")  # Log first 500 chars of prompt
             
-            {f"Repository Context: {repo_context}" if repo_context else ""}
-            
-            Please provide the code changes needed to resolve this issue. For each file that needs to be created or modified:
-            1. Specify the file path
-            2. Provide the complete new content of the file
-            3. Include a brief explanation of the changes
-            
-            Format your response exactly like this example:
-            ```python
-            # file: README.md
-            # explanation: Added comprehensive project documentation
-            # Issue2PR Bot
-            # A GitHub bot that automatically converts issues into Pull Requests using AI-powered code generation.
-
-            ## Overview
-            Issue2PR Bot is an automated solution that transforms GitHub issues into Pull Requests using AI. It monitors repositories for new issues, generates appropriate code changes using GPT-4, and creates PRs automatically.
-
-            ## Features
-            - 🚀 **Automatic PR Generation**: Converts issues to PRs with AI-generated code
-            - 🤖 **AI-Powered**: Uses GPT-4 for intelligent code generation
-            - 🔄 **Real-time Monitoring**: Watches for new issues and labels
-            - 📊 **Status Updates**: Updates issue status with PR progress
-            - 🔒 **Secure**: Verifies webhook signatures and handles errors gracefully
-
-            ## Setup
-            1. **Clone the Repository**
-               ```bash
-               git clone https://github.com/yourusername/issue2pr.git
-               cd issue2pr
-               ```
-
-            2. **Install Dependencies**
-               ```bash
-               pip install -r requirements.txt
-               ```
-
-            3. **Configure Environment Variables**
-               Create a `.env` file with:
-               ```
-               GITHUB_TOKEN=your_github_token
-               OPENAI_API_KEY=your_openai_key
-               WEBHOOK_SECRET=your_webhook_secret
-               ```
-
-            4. **Run the Bot**
-               ```bash
-               python main.py
-               ```
-
-            ## Configuration
-            - `GITHUB_TOKEN`: Your GitHub personal access token
-            - `OPENAI_API_KEY`: Your OpenAI API key
-            - `WEBHOOK_SECRET`: Secret for webhook verification
-            - `REPOSITORY`: Target repository (format: owner/repo)
-            - `BRANCH_PREFIX`: Prefix for created branches
-            - `AI_ENGINE`: AI engine to use (gpt4 or sweep)
-
-            ## Usage
-            1. Create an issue in your repository
-            2. The bot will automatically:
-               - Generate appropriate code changes
-               - Create a new branch
-               - Create a PR with the changes
-               - Update the issue status
-
-            ## Contributing
-            Contributions are welcome! Please feel free to submit a Pull Request.
-
-            ## License
-            This project is licensed under the MIT License - see the LICENSE file for details.
-            ```
-
-            Important:
-            - For README files, use proper Markdown formatting
-            - For Python files, include all necessary imports and code
-            - Make sure the content is complete and properly formatted
-            - Include all necessary sections and information
-            """
-
-            logger.info("Sending request to GPT-4")
-            # Call GPT-4 using the new API format
+            # Make the API call
             response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "You are a helpful AI assistant that generates code to resolve GitHub issues."},
+                    {"role": "system", "content": "You are a helpful AI assistant that generates code changes based on GitHub issues."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
                 max_tokens=2000
             )
-
-            content = response.choices[0].message.content
-            logger.info(f"Received response from GPT-4: {content[:200]}...")  # Log first 200 chars
             
-            if not content.strip():
-                logger.error("Empty response received from GPT-4")
-                raise ValueError("Empty response from GPT-4")
-                
-            return content
+            # Log the raw response
+            content = response.choices[0].message.content
+            logger.info(f"Raw AI response: {content[:500]}...")  # Log first 500 chars of response
+            
+            # Parse the response
+            parsed_response = self._parse_gpt4_response(content)
+            logger.info(f"Parsed response: {parsed_response}")
+            
+            return parsed_response
+
         except Exception as e:
-            logger.error(f"Error with GPT-4 generation: {str(e)}")
+            logger.error(f"Error in GPT-4 generation: {str(e)}")
             raise
 
-    def _generate_with_sweep(self, issue_title, issue_body, repo_context):
+    def _prepare_gpt4_prompt(self, issue_data: Dict) -> str:
+        """Prepare a detailed prompt for GPT-4 with all available context."""
+        prompt = f"""Issue Title: {issue_data['issue']['title']}
+Issue Body: {issue_data['issue']['body']}
+Labels: {', '.join(issue_data['issue']['labels'])}
+
+Repository Context:
+Description: {issue_data['context']['repository_info'].get('description', 'N/A')}
+Topics: {', '.join(issue_data['context']['repository_info'].get('topics', []))}
+Default Branch: {issue_data['context']['repository_info'].get('default_branch', 'N/A')}
+
+Related Issues:
+{self._format_related_issues(issue_data['context']['related_issues'])}
+
+Code Context:
+{self._format_code_context(issue_data['context']['code_context'])}
+
+Documentation:
+{self._format_documentation(issue_data['context']['documentation'])}
+
+Please generate the necessary code changes to address this issue. Your response should follow this exact format:
+
+## Explanation of Changes
+[Provide a clear explanation of what changes will be made and why]
+
+## Files to Modify
+[List the files that need to be modified, one per line with a hyphen]
+
+## Changes
+[For each file, provide the changes in a code block. Start each file's changes with the filename in bold, followed by the code block]
+
+## Considerations
+[Any additional considerations or dependencies that need to be addressed]
+
+Make sure to:
+1. Use proper markdown formatting
+2. Include complete code blocks with proper indentation
+3. Separate each section with clear headers
+4. Be specific about the changes needed in each file
+5. Include complete implementations, not just stubs or TODOs
+6. Use proper logging instead of print statements
+7. Include input validation for all user-provided data
+8. Add appropriate HTTP status codes for different error scenarios
+9. Consider security best practices for token handling
+10. Include rate limit handling and retry mechanisms
+11. Add proper type hints and docstrings
+12. Include unit tests where appropriate
+"""
+        return prompt
+
+    def _format_related_issues(self, related_issues: List[Dict]) -> str:
+        """Format related issues for the prompt."""
+        if not related_issues:
+            return "No related issues found."
+        
+        formatted = []
+        for issue in related_issues:
+            formatted.append(f"- #{issue['number']}: {issue['title']} ({issue['state']})")
+        return "\n".join(formatted)
+
+    def _format_code_context(self, code_context: Dict) -> str:
+        """Format code context for the prompt."""
+        if not code_context:
+            return "No relevant code context found."
+        
+        formatted = []
+        for path, content in code_context.items():
+            formatted.append(f"File: {path}\n```\n{content}\n```")
+        return "\n".join(formatted)
+
+    def _format_documentation(self, documentation: Dict) -> str:
+        """Format documentation for the prompt."""
+        if not documentation:
+            return "No relevant documentation found."
+        
+        formatted = []
+        for path, content in documentation.items():
+            formatted.append(f"Document: {path}\n```\n{content}\n```")
+        return "\n".join(formatted)
+
+    def _parse_gpt4_response(self, response: str) -> Dict:
+        """Parse the GPT-4 response into a structured format."""
+        sections = {
+            'explanation': '',
+            'files': '',
+            'changes': {},
+            'considerations': ''
+        }
+        
+        # Split the response into lines
+        lines = response.split('\n')
+        current_section = None
+        current_content = []
+        in_code_block = False
+        current_code_block = []
+        current_file = None
+        processed_files = set()  # Track processed files to avoid duplicates
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Check for code blocks
+            if line.startswith('```'):
+                if in_code_block:
+                    # End of code block
+                    if current_file:
+                        sections['changes'][current_file] = '\n'.join(current_code_block)
+                    current_code_block = []
+                    in_code_block = False
+                else:
+                    # Start of code block
+                    in_code_block = True
+                continue
+            
+            if in_code_block:
+                current_code_block.append(line)
+                continue
+            
+            # Check for section markers
+            if line.startswith('## Explanation'):
+                current_section = 'explanation'
+                continue
+            elif line.startswith('## Files'):
+                current_section = 'files'
+                continue
+            elif line.startswith('## Changes'):
+                current_section = 'changes'
+                continue
+            elif line.startswith('## Considerations'):
+                current_section = 'considerations'
+                continue
+            elif line.startswith('**') and line.endswith('**'):
+                # Extract filename from bold text
+                current_file = line.strip('*')
+                if current_file not in processed_files:
+                    sections['files'] += f"- {current_file}\n"
+                    processed_files.add(current_file)
+                continue
+            
+            # Add content to current section
+            if current_section and not in_code_block:
+                if current_section == 'explanation':
+                    if line and not line.startswith('##'):
+                        current_content.append(line)
+                elif current_section == 'files' and line.startswith('- '):
+                    file_name = line[2:].strip()
+                    if file_name not in processed_files:
+                        current_content.append(line)
+                        processed_files.add(file_name)
+                elif current_section == 'changes' and not (line.startswith('**') or line.startswith('```')):
+                    current_content.append(line)
+                elif current_section == 'considerations':
+                    if line and not line.startswith('##'):
+                        current_content.append(line)
+            
+            # Process the collected content
+            if current_content and (not line or line.startswith('##')):
+                content = '\n'.join(current_content).strip()
+                if current_section == 'explanation':
+                    sections['explanation'] = content
+                elif current_section == 'files':
+                    sections['files'] = content
+                elif current_section == 'considerations':
+                    sections['considerations'] = content
+                current_content = []
+        
+        return sections
+
+    def _generate_with_sweep(self, issue_data: Dict):
         """Generate code using Sweep.dev API."""
         # TODO: Implement Sweep.dev integration when API becomes available
         raise NotImplementedError("Sweep.dev integration is not yet implemented")

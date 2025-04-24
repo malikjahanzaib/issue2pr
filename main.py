@@ -5,15 +5,15 @@ import logging
 from flask import Flask, request, jsonify
 from github_handler import GitHubHandler
 from ai_engine import AIEngine
-from config import WEBHOOK_SECRET, validate_config
+from config import WEBHOOK_SECRET, validate_config, GITHUB_TOKEN, AI_ENGINE
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize handlers
-github_handler = GitHubHandler()
-ai_engine = AIEngine()
+github_handler = GitHubHandler(GITHUB_TOKEN)
+ai_engine = AIEngine(GITHUB_TOKEN)
 
 # Track processed issues to prevent duplicates
 processed_issues = set()
@@ -38,90 +38,120 @@ def verify_webhook_signature(payload, signature):
     )
 
 @app.route('/webhook', methods=['POST'])
-def webhook():
-    """Handle GitHub webhook events."""
+def handle_webhook():
     try:
-        # Verify the request is from GitHub
+        # Verify webhook signature
         signature = request.headers.get('X-Hub-Signature-256')
-        if not verify_webhook_signature(request.data, signature):
-            return 'Invalid signature', 403
+        if not signature or not verify_webhook_signature(request.data, signature):
+            return jsonify({'error': 'Invalid signature'}), 401
 
-        # Parse the webhook payload
+        # Parse webhook payload
         payload = request.json
-        event = request.headers.get('X-GitHub-Event')
-        
-        # Only process issue events
-        if event != 'issues':
-            return 'Ignoring non-issue event', 200
-            
-        # Only process opened or labeled issues
-        action = payload.get('action')
-        if action not in ['opened', 'labeled']:
-            return 'Ignoring non-opened/labeled issue', 200
-            
-        # Get issue details
-        issue = payload.get('issue', {})
-        issue_number = issue.get('number')
-        title = issue.get('title')
-        body = issue.get('body')
-        labels = [label['name'] for label in issue.get('labels', [])]
-        
-        # Check if issue has already been processed
-        if issue_number in processed_issues:
-            logger.info(f"Issue #{issue_number} has already been processed")
-            return 'Issue already processed', 200
-            
-        # Check if issue has the 'bot:ignore' label
-        if 'bot:ignore' in labels:
-            logger.info(f"Ignoring issue #{issue_number} due to bot:ignore label")
-            return 'Issue ignored due to label', 200
-            
-        # Check if issue has the 'bot:urgent' label
-        is_urgent = 'bot:urgent' in labels
-        
-        # Process the issue
-        process_issue(issue_number, title, body, is_urgent)
-        
-        # Mark issue as processed
-        processed_issues.add(issue_number)
-        
-        return 'Webhook processed successfully', 200
+        event_type = request.headers.get('X-GitHub-Event')
+
+        if event_type == 'issues':
+            handle_issue_event(payload)
+        elif event_type == 'issue_comment':
+            handle_issue_comment(payload)
+        else:
+            logger.info(f"Ignoring unsupported event type: {event_type}")
+
+        return jsonify({'status': 'success'}), 200
+
     except Exception as e:
-        logger.error(f"Error processing webhook: {str(e)}")
-        return 'Error processing webhook', 500
+        logger.error(f"Error handling webhook: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 def handle_issue_event(payload):
     """Handle GitHub issue events."""
     action = payload.get('action')
     issue = payload.get('issue')
-    
-    if not issue:
+    repository = payload.get('repository')
+
+    if not all([action, issue, repository]):
+        logger.error("Missing required fields in issue event payload")
         return
-    
-    issue_number = issue.get('number')
-    issue_title = issue.get('title')
-    issue_body = issue.get('body')
-    
+
+    repo_name = repository['full_name']
+    issue_number = issue['number']
+
     if action in ['opened', 'labeled']:
-        logger.info(f"Processing issue #{issue_number}: {issue_title}")
-        process_issue(issue_number, issue_title, issue_body)
+        logger.info(f"Processing issue #{issue_number} in {repo_name}")
+        
+        try:
+            # Generate code changes using AI
+            code_changes = ai_engine.generate_code(repo_name, issue_number)
+            
+            # Create PR with the changes
+            pr_url = github_handler.create_pr(
+                repo_name=repo_name,
+                issue_number=issue_number,
+                title=f"Fix for issue #{issue_number}",
+                body=code_changes['explanation'],
+                changes=code_changes['changes']
+            )
+            
+            logger.info(f"Created PR: {pr_url}")
+            
+            # Update issue with PR link
+            github_handler.update_issue(
+                repo_name=repo_name,
+                issue_number=issue_number,
+                comment=f"PR created: {pr_url}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error processing issue: {str(e)}")
+            github_handler.update_issue(
+                repo_name=repo_name,
+                issue_number=issue_number,
+                comment=f"Error processing issue: {str(e)}"
+            )
 
 def handle_issue_comment(payload):
     """Handle GitHub issue comment events."""
+    action = payload.get('action')
     comment = payload.get('comment')
     issue = payload.get('issue')
-    
-    if not comment or not issue:
+    repository = payload.get('repository')
+
+    if not all([action, comment, issue, repository]):
+        logger.error("Missing required fields in comment event payload")
         return
-    
-    # Check if the comment contains a trigger command
-    if '/issue2pr' in comment.get('body', '').lower():
-        issue_number = issue.get('number')
-        issue_title = issue.get('title')
-        issue_body = issue.get('body')
+
+    if action == 'created' and comment['body'].startswith('/generate'):
+        repo_name = repository['full_name']
+        issue_number = issue['number']
         
-        logger.info(f"Processing issue #{issue_number} via comment trigger")
-        process_issue(issue_number, issue_title, issue_body)
+        try:
+            # Generate code changes using AI
+            code_changes = ai_engine.generate_code(repo_name, issue_number)
+            
+            # Create PR with the changes
+            pr_url = github_handler.create_pr(
+                repo_name=repo_name,
+                issue_number=issue_number,
+                title=f"Fix for issue #{issue_number}",
+                body=code_changes['explanation'],
+                changes=code_changes['changes']
+            )
+            
+            logger.info(f"Created PR: {pr_url}")
+            
+            # Update issue with PR link
+            github_handler.update_issue(
+                repo_name=repo_name,
+                issue_number=issue_number,
+                comment=f"PR created: {pr_url}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error processing comment: {str(e)}")
+            github_handler.update_issue(
+                repo_name=repo_name,
+                issue_number=issue_number,
+                comment=f"Error processing comment: {str(e)}"
+            )
 
 def process_issue(issue_number, title, body, is_urgent=False):
     """Process an issue and create a PR with AI-generated changes."""
@@ -201,4 +231,4 @@ if __name__ == '__main__':
     validate_config()
     
     # Start the Flask application
-    app.run(host='0.0.0.0', port=3000) 
+    app.run(host='0.0.0.0', port=3000, debug=True) 
